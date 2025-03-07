@@ -9,6 +9,9 @@ import torch
 import os
 import socket
 import logging
+import base64
+from PIL import Image
+import io
 
 # Suppress OpenCV webcam errors in logs
 os.environ["OPENCV_LOG_LEVEL"] = "FATAL"  # Suppress OpenCV logs
@@ -17,6 +20,10 @@ logging.getLogger("opencv-python").setLevel(logging.FATAL)
 # Initialize session state for source selection
 if 'source_radio' not in st.session_state:
     st.session_state.source_radio = "Webcam"
+
+# Initialize session state for webcam image
+if 'webcam_image' not in st.session_state:
+    st.session_state.webcam_image = None
 
 # Detect user agent for browser-specific instructions
 from streamlit.web.server.websocket_headers import _get_websocket_headers
@@ -159,236 +166,63 @@ if source_radio == "Webcam":
     st.info("""
     ### Important: Browser Camera Permissions
     This app requires camera access. Please ensure:
-    1. You've allowed camera permissions in your browser
+    1. You've allowed camera permissions in your browser when prompted
     2. No other applications are currently using your camera
     3. Your camera is properly connected and working
     
-    If you're using Streamlit Cloud, make sure to click 'Allow' when prompted for camera access.
+    If you're using Streamlit Cloud, you should see a camera permission prompt from your browser.
     """)
     
-    # Add a webcam test button
-    if st.button("Test Browser Camera Access"):
-        # Use HTML/JavaScript to directly access the browser's camera
-        st.markdown("""
-        <div style="background-color: #f0f0f0; padding: 10px; border-radius: 5px;">
-            <h3>Browser Camera Test</h3>
-            <p>If you see your camera feed below, your browser camera is working correctly:</p>
-            <video id="webcamTest" autoplay style="width: 100%; max-width: 500px; border: 1px solid #ddd;"></video>
-        </div>
-        
-        <script>
-            // JavaScript to access browser camera
-            const video = document.getElementById('webcamTest');
-            
-            // Check if browser supports getUserMedia
-            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                navigator.mediaDevices.getUserMedia({ video: true })
-                    .then(function(stream) {
-                        video.srcObject = stream;
-                        console.log("Camera access successful");
-                    })
-                    .catch(function(error) {
-                        console.error("Camera access error:", error);
-                        document.body.insertAdjacentHTML('beforeend', 
-                            '<div style="color: red; margin-top: 10px;">Error accessing camera: ' + error.message + '</div>');
-                    });
-            } else {
-                document.body.insertAdjacentHTML('beforeend', 
-                    '<div style="color: red; margin-top: 10px;">Your browser does not support camera access</div>');
-            }
-        </script>
-        """, unsafe_allow_html=True)
-        
-        st.info("""
-        ### What to do if the camera test fails:
-        
-        1. **Check browser permissions**: Look for the camera icon in your browser's address bar
-        2. **Try a different browser**: Chrome works best for webcam access
-        3. **Refresh the page**: Sometimes a refresh can resolve permission issues
-        4. **Check for other apps**: Make sure no other applications are using your camera
-        """)
+    # Use our custom webcam component
+    captured_image_placeholder, detection_results_placeholder = webcam_component()
     
-    try:
-        # For macOS, try different camera indices
-        if is_macos:
-            camera_indices = [0, 1, 2]  # Try indices 0, 1, and 2 for macOS
-            cap = None
-            for idx in camera_indices:
-                cap = cv2.VideoCapture(idx)
-                if cap.isOpened():
-                    st.success(f"Successfully connected to camera at index {idx}")
-                    break
-                cap.release()
-        else:
-            # Try multiple camera indices for Windows/Linux as well
-            camera_indices = [0, 1, 2, 3]  # Try more indices for Windows/Linux
-            cap = None
-            for idx in camera_indices:
-                cap = cv2.VideoCapture(idx)
-                if cap.isOpened():
-                    st.success(f"Successfully connected to camera at index {idx}")
-                    break
-                cap.release()
-
-        if not cap or not cap.isOpened():
-            st.error("Error: Could not access webcam through OpenCV. Trying browser-based access...")
-            
-            # Fallback to browser-based webcam access
-            st.markdown("""
-            <div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-                <h3 style="color: #0066cc;">Browser-Based Webcam Access</h3>
-                <p>We'll try to access your webcam directly through your browser:</p>
-                <video id="webcam" autoplay style="width: 100%; border-radius: 5px;"></video>
-                <canvas id="canvas" style="display: none;"></canvas>
-                <div id="status" style="margin-top: 10px; font-weight: bold;"></div>
-                <button id="captureBtn" style="margin-top: 10px; padding: 8px 16px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">Capture Frame for Detection</button>
-                <div id="detectionResults" style="margin-top: 15px;"></div>
-            </div>
-            
-            <script>
-                // JavaScript to access browser camera and perform detection
-                const video = document.getElementById('webcam');
-                const canvas = document.getElementById('canvas');
-                const status = document.getElementById('status');
-                const captureBtn = document.getElementById('captureBtn');
-                const detectionResults = document.getElementById('detectionResults');
-                let stream = null;
-                
-                // Check if browser supports getUserMedia
-                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                    status.innerHTML = "Requesting camera access...";
-                    navigator.mediaDevices.getUserMedia({ video: true })
-                        .then(function(mediaStream) {
-                            stream = mediaStream;
-                            video.srcObject = stream;
-                            status.innerHTML = "✅ Camera connected! Click the button below to capture a frame for object detection.";
-                            status.style.color = "green";
-                        })
-                        .catch(function(error) {
-                            console.error("Camera access error:", error);
-                            status.innerHTML = "❌ Error accessing camera: " + error.message;
-                            status.style.color = "red";
-                        });
-                } else {
-                    status.innerHTML = "❌ Your browser does not support camera access";
-                    status.style.color = "red";
-                }
-                
-                // Capture frame when button is clicked
-                captureBtn.addEventListener('click', function() {
-                    if (!stream) {
-                        status.innerHTML = "❌ No camera stream available";
-                        return;
-                    }
-                    
-                    // Set canvas dimensions to match video
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-                    
-                    // Draw video frame to canvas
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    
-                    // Convert canvas to data URL
-                    const imageData = canvas.toDataURL('image/jpeg');
-                    
-                    // Send to Streamlit
-                    detectionResults.innerHTML = "<p>Processing image for detection...</p>";
-                    
-                    // This would normally send the image to the server for processing
-                    // For now, we'll just show a placeholder message
-                    setTimeout(() => {
-                        detectionResults.innerHTML = "<p>Detection would happen here with the server-side model</p>";
-                    }, 1000);
-                });
-                
-                // Clean up when component is unmounted
-                window.addEventListener('beforeunload', () => {
-                    if (stream) {
-                        stream.getTracks().forEach(track => track.stop());
-                    }
-                });
-            </script>
-            """, unsafe_allow_html=True)
-            
-            st.info("""
-            ### Browser-Based Webcam Notes:
-            
-            - This is a fallback method when OpenCV can't access your camera
-            - You must allow camera permissions in your browser
-            - Click the "Capture Frame" button to take a snapshot for detection
-            - For full real-time detection, try running this app locally
-            """)
-            
-            st.stop()
-
-        # Add a stop button
-        stop_button = st.button('Stop Webcam', key='stop_webcam')
-
-        st.markdown("<div style='text-align: center; color: #4CAF50; font-weight: bold;'>Webcam is active! Detecting objects...</div>", unsafe_allow_html=True)
+    # Add a callback for processing captured frames
+    if 'webcam_image' in st.session_state and st.session_state.webcam_image:
+        # Get the image data from session state
+        img_data = st.session_state.webcam_image
         
-        # Add a frame counter and error counter for robustness
-        frame_count = 0
-        error_count = 0
-        max_errors = 5  # Maximum consecutive errors before stopping
+        try:
+            # Convert base64 image to numpy array
+            img_data = img_data.split(",")[1]  # Remove the data URL prefix
+            img_bytes = base64.b64decode(img_data)
+            img = Image.open(io.BytesIO(img_bytes))
+            img_array = np.array(img)
+            
+            # Display the captured image
+            captured_image_placeholder.image(img_array, caption="Captured Frame", use_column_width=True)
+            
+            # Perform detection
+            results = model(img_array, conf=confidence_threshold)
+            
+            # Visualize the results
+            annotated_frame = results[0].plot()
+            
+            # Display the results
+            detection_results_placeholder.image(annotated_frame, caption="Detection Results", use_column_width=True)
+            
+            # Display detection count
+            num_detections = len(results[0].boxes)
+            st.success(f"Detected {num_detections} objects in the captured frame")
+            
+        except Exception as e:
+            st.error(f"Error processing image: {str(e)}")
+    
+    # Add JavaScript to handle the custom event
+    st.markdown("""
+    <script>
+    // Listen for the custom capture event
+    window.addEventListener('streamlit:captureFrame', function(event) {
+        // Get the image data
+        const imageData = event.detail.data;
         
-        while not stop_button:
-            try:
-                start_time = time.time()
-                ret, frame = cap.read()
-                
-                if not ret or frame is None or frame.size == 0:
-                    error_count += 1
-                    if error_count > max_errors:
-                        st.error("Too many consecutive frame reading errors. Stopping webcam.")
-                        break
-                    continue
-                
-                # Reset error counter on successful frame
-                error_count = 0
-                frame_count += 1
-                
-                # Convert frame from BGR to RGB
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # Perform detection with confidence threshold
-                results = model(frame, conf=confidence_threshold)
-                
-                # Visualize the results on the frame
-                annotated_frame = results[0].plot()
-                
-                # Display the frame
-                stframe.image(annotated_frame, use_container_width=True)
-
-                # Calculate and display FPS
-                fps = 1.0 / (time.time() - start_time)
-                fps_display.markdown(f"<div class='metric-container'><h3>FPS</h3><h2>{fps:.2f}</h2></div>", unsafe_allow_html=True)
-                
-                # Count and display detections
-                num_detections = len(results[0].boxes)
-                detection_count.markdown(f"<div class='metric-container'><h3>Detections</h3><h2>{num_detections}</h2></div>", unsafe_allow_html=True)
-
-                # Check if the stop button was clicked
-                if stop_button:
-                    break
-                    
-            except Exception as e:
-                error_count += 1
-                st.error(f"Error processing frame: {str(e)}")
-                if error_count > max_errors:
-                    st.error("Too many errors. Stopping webcam.")
-                    break
-                time.sleep(0.1)  # Short delay before retrying
-
-        # Release the webcam
-        cap.release()
-
-    except Exception as e:
-        st.error(f"Error accessing webcam: {str(e)}")
-        st.info("To fix this on macOS:")
-        st.info("1. Go to System Settings > Privacy & Security > Camera")
-        st.info("2. Enable camera access for your browser/terminal")
-
+        // Send to Streamlit via the Streamlit component
+        if (window.Streamlit) {
+            window.Streamlit.setComponentValue(imageData);
+        }
+    });
+    </script>
+    """, unsafe_allow_html=True)
+    
 else:  # Upload Video option
     # Add video upload option with more detailed instructions
     st.markdown("### Upload a Video File")
@@ -453,3 +287,157 @@ st.markdown("""
     <p>© 2023 Object Detection App</p>
 </div>
 """, unsafe_allow_html=True)
+
+# Add a custom webcam component
+def webcam_component():
+    """Create a custom webcam component that works in Streamlit Cloud"""
+    # Generate a unique ID for this component instance
+    component_id = "webcam_" + str(int(time.time()))
+    
+    # Create a placeholder for the webcam feed
+    webcam_placeholder = st.empty()
+    
+    # Create placeholders for the captured image and detection results
+    captured_image_placeholder = st.empty()
+    detection_results_placeholder = st.empty()
+    
+    # HTML/JS for the webcam component
+    webcam_html = f"""
+    <div style="border: 1px solid #ddd; padding: 10px; border-radius: 5px; margin-bottom: 20px;">
+        <h3 style="color: #4CAF50;">Browser Webcam Access</h3>
+        <video id="{component_id}_video" autoplay playsinline style="width: 100%; max-width: 640px; border-radius: 5px;"></video>
+        <div id="{component_id}_status" style="margin: 10px 0; font-weight: bold;"></div>
+        <button id="{component_id}_capture" style="background-color: #4CAF50; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-right: 10px;">Capture for Detection</button>
+        <button id="{component_id}_stop" style="background-color: #f44336; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; display: none;">Stop Camera</button>
+        
+        <canvas id="{component_id}_canvas" style="display: none;"></canvas>
+        <input type="hidden" id="{component_id}_data" name="data" value="">
+    </div>
+    
+    <script>
+        // Wait for DOM to load
+        document.addEventListener('DOMContentLoaded', (event) => {{
+            const videoElement = document.getElementById('{component_id}_video');
+            const statusElement = document.getElementById('{component_id}_status');
+            const captureButton = document.getElementById('{component_id}_capture');
+            const stopButton = document.getElementById('{component_id}_stop');
+            const canvasElement = document.getElementById('{component_id}_canvas');
+            const dataElement = document.getElementById('{component_id}_data');
+            
+            let stream = null;
+            
+            // Function to start the webcam
+            async function startWebcam() {{
+                statusElement.textContent = "Requesting camera access...";
+                statusElement.style.color = "blue";
+                
+                try {{
+                    // Request camera access with preferred settings
+                    stream = await navigator.mediaDevices.getUserMedia({{
+                        video: {{ 
+                            width: {{ ideal: 640 }},
+                            height: {{ ideal: 480 }},
+                            facingMode: "user"
+                        }},
+                        audio: false
+                    }});
+                    
+                    // Set the video source to the camera stream
+                    videoElement.srcObject = stream;
+                    
+                    // Show success message
+                    statusElement.textContent = "✅ Camera connected! Click 'Capture for Detection' to analyze a frame.";
+                    statusElement.style.color = "green";
+                    
+                    // Show stop button
+                    stopButton.style.display = "inline-block";
+                    
+                }} catch (error) {{
+                    // Show error message
+                    statusElement.textContent = "❌ Error accessing camera: " + error.message;
+                    statusElement.style.color = "red";
+                    console.error("Camera access error:", error);
+                }}
+            }}
+            
+            // Function to stop the webcam
+            function stopWebcam() {{
+                if (stream) {{
+                    stream.getTracks().forEach(track => track.stop());
+                    videoElement.srcObject = null;
+                    stream = null;
+                    statusElement.textContent = "Camera stopped. Refresh the page to restart.";
+                    statusElement.style.color = "orange";
+                    stopButton.style.display = "none";
+                }}
+            }}
+            
+            // Function to capture a frame
+            function captureFrame() {{
+                if (!stream) {{
+                    statusElement.textContent = "❌ No camera stream available. Please start the camera first.";
+                    statusElement.style.color = "red";
+                    return;
+                }}
+                
+                // Set canvas dimensions to match video
+                canvasElement.width = videoElement.videoWidth;
+                canvasElement.height = videoElement.videoHeight;
+                
+                // Draw video frame to canvas
+                const ctx = canvasElement.getContext('2d');
+                ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+                
+                // Convert canvas to data URL (JPEG format)
+                const imageData = canvasElement.toDataURL('image/jpeg', 0.9);
+                
+                // Store the image data in the hidden input
+                dataElement.value = imageData;
+                
+                // Send to Streamlit
+                window.parent.postMessage({{
+                    type: 'streamlit:setComponentValue',
+                    value: imageData
+                }}, '*');
+                
+                // Update status
+                statusElement.textContent = "Frame captured! Processing...";
+                statusElement.style.color = "blue";
+            }}
+            
+            // Add event listeners
+            captureButton.addEventListener('click', captureFrame);
+            stopButton.addEventListener('click', stopWebcam);
+            
+            // Start webcam automatically
+            startWebcam();
+        }});
+    </script>
+    """
+    
+    # Display the webcam component
+    webcam_placeholder.markdown(webcam_html, unsafe_allow_html=True)
+    
+    # Create a component to receive the captured image
+    from streamlit.components.v1 import components
+    
+    def capture_callback(image_data):
+        if image_data:
+            st.session_state.webcam_image = image_data
+            return True
+        return False
+    
+    # Register the component
+    custom_component = components.declare_component(
+        "webcam_capture",
+        render_func=lambda: None  # We're using the HTML/JS above
+    )
+    
+    # Use the component to receive the captured image
+    result = custom_component(key=f"webcam_capture_{component_id}", default=None)
+    if result:
+        st.session_state.webcam_image = result
+        st.experimental_rerun()
+    
+    # Return the placeholders for later use
+    return captured_image_placeholder, detection_results_placeholder

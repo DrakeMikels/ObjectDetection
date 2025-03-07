@@ -5,6 +5,7 @@ import numpy as np
 import tempfile
 import platform
 import time
+import torch
 
 # Page configuration
 st.set_page_config(
@@ -80,7 +81,21 @@ st.markdown("<p class='sub-header'>Detect objects in real-time using YOLOv8</p>"
 # Load YOLOv8 model
 @st.cache_resource
 def load_model():
-    return YOLO('yolov8n.pt')
+    try:
+        # First try the standard way
+        return YOLO('yolov8n.pt')
+    except Exception as e:
+        if "weights_only" in str(e):
+            st.warning("Using compatibility mode for PyTorch 2.6+. This is safe as we're loading official YOLOv8 weights.")
+            # Add the necessary safe globals for PyTorch 2.6+
+            import torch.serialization
+            from ultralytics.nn.tasks import DetectionModel
+            # Use a context manager to safely load the model
+            with torch.serialization.safe_globals([DetectionModel]):
+                return YOLO('yolov8n.pt')
+        else:
+            # If it's a different error, re-raise it
+            raise e
 
 # Status message while loading model
 with st.spinner("Loading YOLOv8 model..."):

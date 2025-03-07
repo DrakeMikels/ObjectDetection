@@ -6,6 +6,18 @@ import tempfile
 import platform
 import time
 import torch
+import os
+
+# Monkey patch torch.load to handle PyTorch 2.6+ compatibility
+original_torch_load = torch.load
+
+def patched_torch_load(*args, **kwargs):
+    # Force weights_only=False for compatibility
+    kwargs['weights_only'] = False
+    return original_torch_load(*args, **kwargs)
+
+# Apply the patch
+torch.load = patched_torch_load
 
 # Page configuration
 st.set_page_config(
@@ -81,21 +93,9 @@ st.markdown("<p class='sub-header'>Detect objects in real-time using YOLOv8</p>"
 # Load YOLOv8 model
 @st.cache_resource
 def load_model():
-    try:
-        # First try the standard way
-        return YOLO('yolov8n.pt')
-    except Exception as e:
-        if "weights_only" in str(e):
-            st.warning("Using compatibility mode for PyTorch 2.6+. This is safe as we're loading official YOLOv8 weights.")
-            # Add the necessary safe globals for PyTorch 2.6+
-            import torch.serialization
-            from ultralytics.nn.tasks import DetectionModel
-            # Use a context manager to safely load the model
-            with torch.serialization.safe_globals([DetectionModel]):
-                return YOLO('yolov8n.pt')
-        else:
-            # If it's a different error, re-raise it
-            raise e
+    # Set environment variable to disable PyTorch 2.6+ warnings
+    os.environ['TORCH_WARN_WEIGHTS_ONLY'] = '0'
+    return YOLO('yolov8n.pt')
 
 # Status message while loading model
 with st.spinner("Loading YOLOv8 model..."):

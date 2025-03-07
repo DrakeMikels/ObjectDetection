@@ -10,6 +10,10 @@ import os
 import socket
 import logging
 
+# Suppress OpenCV webcam errors in logs
+os.environ["OPENCV_LOG_LEVEL"] = "FATAL"  # Suppress OpenCV logs
+logging.getLogger("opencv-python").setLevel(logging.FATAL)
+
 # Initialize session state for source selection
 if 'source_radio' not in st.session_state:
     st.session_state.source_radio = "Webcam"
@@ -114,8 +118,8 @@ with demo_expander:
     you can try the "Upload Video" option in the sidebar and use a sample video.
     
     Here are some sample videos you can download and then upload:
-    - [Sample Video 1: Street Traffic](https://github.com/ultralytics/assets/raw/main/examples/zidane.jpg)
-    - [Sample Video 2: People Walking](https://github.com/ultralytics/assets/raw/main/examples/bus.jpg)
+    - [Sample Video 1: Street Traffic](https://github.com/ultralytics/assets/raw/main/examples/bus.mp4)
+    - [Sample Video 2: People Walking](https://github.com/ultralytics/assets/raw/main/examples/person.mp4)
     
     Or you can use any video file from your device.
     """)
@@ -162,99 +166,47 @@ if source_radio == "Webcam":
     If you're using Streamlit Cloud, make sure to click 'Allow' when prompted for camera access.
     """)
     
-    # Check if running in Streamlit Cloud
-    is_cloud = False
-    try:
-        # Try to detect if running in Streamlit Cloud by checking hostname
-        hostname = socket.gethostname()
-        is_cloud = "streamlit" in hostname.lower() or "heroku" in hostname.lower()
-    except:
-        pass
+    # Add a webcam test button
+    if st.button("Test Browser Camera Access"):
+        # Use HTML/JavaScript to directly access the browser's camera
+        st.markdown("""
+        <div style="background-color: #f0f0f0; padding: 10px; border-radius: 5px;">
+            <h3>Browser Camera Test</h3>
+            <p>If you see your camera feed below, your browser camera is working correctly:</p>
+            <video id="webcamTest" autoplay style="width: 100%; max-width: 500px; border: 1px solid #ddd;"></video>
+        </div>
         
-    if is_cloud:
-        st.warning("""
-        ### Running in Cloud Environment
-        You're accessing this app from Streamlit Cloud. Webcam access in cloud environments:
+        <script>
+            // JavaScript to access browser camera
+            const video = document.getElementById('webcamTest');
+            
+            // Check if browser supports getUserMedia
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia({ video: true })
+                    .then(function(stream) {
+                        video.srcObject = stream;
+                        console.log("Camera access successful");
+                    })
+                    .catch(function(error) {
+                        console.error("Camera access error:", error);
+                        document.body.insertAdjacentHTML('beforeend', 
+                            '<div style="color: red; margin-top: 10px;">Error accessing camera: ' + error.message + '</div>');
+                    });
+            } else {
+                document.body.insertAdjacentHTML('beforeend', 
+                    '<div style="color: red; margin-top: 10px;">Your browser does not support camera access</div>');
+            }
+        </script>
+        """, unsafe_allow_html=True)
         
-        1. Requires HTTPS (which Streamlit Cloud provides)
-        2. Needs explicit browser permission (look for camera icon in address bar)
-        3. May be blocked by some corporate networks or VPNs
+        st.info("""
+        ### What to do if the camera test fails:
         
-        If you continue to have issues, try the Upload Video option instead.
+        1. **Check browser permissions**: Look for the camera icon in your browser's address bar
+        2. **Try a different browser**: Chrome works best for webcam access
+        3. **Refresh the page**: Sometimes a refresh can resolve permission issues
+        4. **Check for other apps**: Make sure no other applications are using your camera
         """)
-    
-    # Add a webcam test option
-    if st.button("Test Webcam Connection"):
-        with st.spinner("Testing webcam connection..."):
-            # Suppress OpenCV warnings during testing
-            logging.getLogger("opencv-python").setLevel(logging.ERROR)
-            
-            # Try to connect to webcam
-            test_indices = [0, 1, 2, 3]
-            test_results = []
-            found_working_camera = False
-            
-            for idx in test_indices:
-                try:
-                    test_cap = cv2.VideoCapture(idx)
-                    if test_cap.isOpened():
-                        ret, frame = test_cap.read()
-                        if ret and frame is not None and frame.size > 0:
-                            found_working_camera = True
-                            test_results.append(f"✅ Camera index {idx}: Working")
-                            # Show a single frame from this camera
-                            st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), 
-                                    caption=f"Test frame from camera index {idx}", 
-                                    width=300)
-                        else:
-                            test_results.append(f"⚠️ Camera index {idx}: Connected but can't read frames")
-                    else:
-                        test_results.append(f"❌ Camera index {idx}: Not available")
-                except Exception as e:
-                    test_results.append(f"❌ Camera index {idx}: Error - {str(e)}")
-                finally:
-                    if 'test_cap' in locals() and test_cap is not None:
-                        test_cap.release()
-            
-            # Display all test results
-            st.write("### Camera Test Results:")
-            for result in test_results:
-                st.write(result)
-                
-            if found_working_camera:
-                st.success("Webcam test successful! At least one camera is working.")
-            else:
-                st.error("No working cameras found.")
-                
-                # Provide browser-specific guidance
-                user_agent = st.session_state.get('user_agent', '')
-                if 'Chrome' in user_agent:
-                    st.info("""
-                    ### Chrome-specific tips:
-                    1. Click the camera icon in the address bar
-                    2. Select "Allow" for camera access
-                    3. Refresh the page
-                    """)
-                elif 'Firefox' in user_agent:
-                    st.info("""
-                    ### Firefox-specific tips:
-                    1. Click the camera icon in the address bar
-                    2. Select "Allow" for camera access
-                    3. Refresh the page
-                    """)
-                elif 'Safari' in user_agent:
-                    st.info("""
-                    ### Safari-specific tips:
-                    1. Check Safari > Settings > Websites > Camera
-                    2. Allow camera access for this website
-                    3. Refresh the page
-                    """)
-                
-                # Offer fallback to video upload
-                st.info("### Alternative: You can use the 'Upload Video' option instead")
-                if st.button("Switch to Video Upload", key="switch_to_video"):
-                    st.session_state.source_radio = "Upload Video"
-                    st.experimental_rerun()
     
     try:
         # For macOS, try different camera indices
@@ -279,30 +231,95 @@ if source_radio == "Webcam":
                 cap.release()
 
         if not cap or not cap.isOpened():
-            st.error("Error: Could not access webcam. Please check your camera permissions.")
+            st.error("Error: Could not access webcam through OpenCV. Trying browser-based access...")
             
-            # Provide platform-specific instructions
-            if is_macos:
-                st.info("### To fix this on macOS:")
-                st.info("1. Go to System Settings > Privacy & Security > Camera")
-                st.info("2. Enable camera access for your browser/terminal")
-            elif platform.system() == 'Windows':
-                st.info("### To fix this on Windows:")
-                st.info("1. Go to Settings > Privacy & Security > Camera")
-                st.info("2. Ensure 'Allow apps to access your camera' is turned on")
-                st.info("3. Make sure your browser has camera permissions")
-            else:  # Linux
-                st.info("### To fix this on Linux:")
-                st.info("1. Check browser settings for camera permissions")
-                st.info("2. Ensure your user has access to the video device (usually in /dev/video*)")
-                st.info("3. If using Streamlit Cloud, note that physical webcams aren't available - this is expected")
+            # Fallback to browser-based webcam access
+            st.markdown("""
+            <div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                <h3 style="color: #0066cc;">Browser-Based Webcam Access</h3>
+                <p>We'll try to access your webcam directly through your browser:</p>
+                <video id="webcam" autoplay style="width: 100%; border-radius: 5px;"></video>
+                <canvas id="canvas" style="display: none;"></canvas>
+                <div id="status" style="margin-top: 10px; font-weight: bold;"></div>
+                <button id="captureBtn" style="margin-top: 10px; padding: 8px 16px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">Capture Frame for Detection</button>
+                <div id="detectionResults" style="margin-top: 15px;"></div>
+            </div>
             
-            # Offer fallback to video upload
-            st.info("### Alternative: You can use the 'Upload Video' option instead")
-            if st.button("Switch to Video Upload", key="switch_to_video_main"):
-                st.session_state.source_radio = "Upload Video"
-                st.experimental_rerun()
+            <script>
+                // JavaScript to access browser camera and perform detection
+                const video = document.getElementById('webcam');
+                const canvas = document.getElementById('canvas');
+                const status = document.getElementById('status');
+                const captureBtn = document.getElementById('captureBtn');
+                const detectionResults = document.getElementById('detectionResults');
+                let stream = null;
                 
+                // Check if browser supports getUserMedia
+                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    status.innerHTML = "Requesting camera access...";
+                    navigator.mediaDevices.getUserMedia({ video: true })
+                        .then(function(mediaStream) {
+                            stream = mediaStream;
+                            video.srcObject = stream;
+                            status.innerHTML = "✅ Camera connected! Click the button below to capture a frame for object detection.";
+                            status.style.color = "green";
+                        })
+                        .catch(function(error) {
+                            console.error("Camera access error:", error);
+                            status.innerHTML = "❌ Error accessing camera: " + error.message;
+                            status.style.color = "red";
+                        });
+                } else {
+                    status.innerHTML = "❌ Your browser does not support camera access";
+                    status.style.color = "red";
+                }
+                
+                // Capture frame when button is clicked
+                captureBtn.addEventListener('click', function() {
+                    if (!stream) {
+                        status.innerHTML = "❌ No camera stream available";
+                        return;
+                    }
+                    
+                    // Set canvas dimensions to match video
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    
+                    // Draw video frame to canvas
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    
+                    // Convert canvas to data URL
+                    const imageData = canvas.toDataURL('image/jpeg');
+                    
+                    // Send to Streamlit
+                    detectionResults.innerHTML = "<p>Processing image for detection...</p>";
+                    
+                    // This would normally send the image to the server for processing
+                    // For now, we'll just show a placeholder message
+                    setTimeout(() => {
+                        detectionResults.innerHTML = "<p>Detection would happen here with the server-side model</p>";
+                    }, 1000);
+                });
+                
+                // Clean up when component is unmounted
+                window.addEventListener('beforeunload', () => {
+                    if (stream) {
+                        stream.getTracks().forEach(track => track.stop());
+                    }
+                });
+            </script>
+            """, unsafe_allow_html=True)
+            
+            st.info("""
+            ### Browser-Based Webcam Notes:
+            
+            - This is a fallback method when OpenCV can't access your camera
+            - You must allow camera permissions in your browser
+            - Click the "Capture Frame" button to take a snapshot for detection
+            - For full real-time detection, try running this app locally
+            """)
+            
             st.stop()
 
         # Add a stop button

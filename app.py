@@ -8,6 +8,10 @@ import time
 import torch
 import os
 
+# Initialize session state for source selection
+if 'source_radio' not in st.session_state:
+    st.session_state.source_radio = "Webcam"
+
 # Monkey patch torch.load to handle PyTorch 2.6+ compatibility
 original_torch_load = torch.load
 
@@ -71,7 +75,8 @@ with st.sidebar:
     st.markdown("### Input Source")
     source_radio = st.radio(
         "Select input source:",
-        ["Webcam", "Upload Video"]
+        ["Webcam", "Upload Video"],
+        key="source_radio"  # Use session state key
     )
     
     # Display info about the app
@@ -118,24 +123,85 @@ is_macos = platform.system() == 'Darwin'
 
 # Process based on selected source
 if source_radio == "Webcam":
+    # Add clear instructions about browser permissions
+    st.info("""
+    ### Important: Browser Camera Permissions
+    This app requires camera access. Please ensure:
+    1. You've allowed camera permissions in your browser
+    2. No other applications are currently using your camera
+    3. Your camera is properly connected and working
+    
+    If you're using Streamlit Cloud, make sure to click 'Allow' when prompted for camera access.
+    """)
+    
+    # Add a webcam test option
+    if st.button("Test Webcam Connection"):
+        with st.spinner("Testing webcam connection..."):
+            # Try to connect to webcam
+            test_indices = [0, 1, 2, 3]
+            test_results = []
+            
+            for idx in test_indices:
+                test_cap = cv2.VideoCapture(idx)
+                if test_cap.isOpened():
+                    ret, frame = test_cap.read()
+                    if ret:
+                        test_results.append(f"✅ Camera index {idx}: Working")
+                        # Show a single frame from this camera
+                        st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), 
+                                caption=f"Test frame from camera index {idx}", 
+                                width=300)
+                    else:
+                        test_results.append(f"⚠️ Camera index {idx}: Connected but can't read frames")
+                    test_cap.release()
+                else:
+                    test_results.append(f"❌ Camera index {idx}: Not available")
+            
+            if any("✅" in result for result in test_results):
+                st.success("Webcam test successful! At least one camera is working.")
+            else:
+                st.error("No working cameras found. Please check your camera connections and permissions.")
+            
+            # Display all test results
+            st.write("### Camera Test Results:")
+            for result in test_results:
+                st.write(result)
+    
     try:
-        # For macOS, try different camera indices
-        if is_macos:
-            camera_indices = [0, 1, 2]  # Try indices 0, 1, and 2 for macOS
-            cap = None
-            for idx in camera_indices:
-                cap = cv2.VideoCapture(idx)
-                if cap.isOpened():
-                    break
-                cap.release()
-        else:
-            cap = cv2.VideoCapture(0)
+        # Try multiple camera indices for Windows/Linux as well
+        camera_indices = [0, 1, 2, 3]  # Try more indices for Windows/Linux
+        cap = None
+        for idx in camera_indices:
+            cap = cv2.VideoCapture(idx)
+            if cap.isOpened():
+                st.success(f"Successfully connected to camera at index {idx}")
+                break
+            cap.release()
 
         if not cap or not cap.isOpened():
-            st.error("Error: Could not access webcam. Please check your camera permissions in System Settings.")
-            st.info("To fix this on macOS:")
-            st.info("1. Go to System Settings > Privacy & Security > Camera")
-            st.info("2. Enable camera access for your browser/terminal")
+            st.error("Error: Could not access webcam. Please check your camera permissions.")
+            
+            # Provide platform-specific instructions
+            if is_macos:
+                st.info("### To fix this on macOS:")
+                st.info("1. Go to System Settings > Privacy & Security > Camera")
+                st.info("2. Enable camera access for your browser/terminal")
+            elif platform.system() == 'Windows':
+                st.info("### To fix this on Windows:")
+                st.info("1. Go to Settings > Privacy & Security > Camera")
+                st.info("2. Ensure 'Allow apps to access your camera' is turned on")
+                st.info("3. Make sure your browser has camera permissions")
+            else:  # Linux
+                st.info("### To fix this on Linux:")
+                st.info("1. Check browser settings for camera permissions")
+                st.info("2. Ensure your user has access to the video device (usually in /dev/video*)")
+            
+            # Offer fallback to video upload
+            st.info("### Alternative: You can use the 'Upload Video' option instead")
+            if st.button("Switch to Video Upload"):
+                st.session_state.source_radio = "Upload Video"
+                st.experimental_rerun()
+                
             st.stop()
 
         # Add a stop button

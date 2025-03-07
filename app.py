@@ -7,10 +7,21 @@ import platform
 import time
 import torch
 import os
+import socket
+import logging
 
 # Initialize session state for source selection
 if 'source_radio' not in st.session_state:
     st.session_state.source_radio = "Webcam"
+
+# Detect user agent for browser-specific instructions
+from streamlit.web.server.websocket_headers import _get_websocket_headers
+
+try:
+    user_agent = _get_websocket_headers().get("User-Agent", "")
+    st.session_state['user_agent'] = user_agent
+except:
+    st.session_state['user_agent'] = ""
 
 # Monkey patch torch.load to handle PyTorch 2.6+ compatibility
 original_torch_load = torch.load
@@ -95,6 +106,23 @@ with st.sidebar:
 st.markdown("<h1 class='main-header'>Real-Time Object Detection</h1>", unsafe_allow_html=True)
 st.markdown("<p class='sub-header'>Detect objects in real-time using YOLOv8</p>", unsafe_allow_html=True)
 
+# Add a demo option for users who can't access webcam
+demo_expander = st.expander("Can't access webcam? Try a demo video instead")
+with demo_expander:
+    st.markdown("""
+    If you're having trouble accessing your webcam (especially on Streamlit Cloud), 
+    you can try the "Upload Video" option in the sidebar and use a sample video.
+    
+    Here are some sample videos you can download and then upload:
+    - [Sample Video 1: Street Traffic](https://github.com/ultralytics/assets/raw/main/examples/zidane.jpg)
+    - [Sample Video 2: People Walking](https://github.com/ultralytics/assets/raw/main/examples/bus.jpg)
+    
+    Or you can use any video file from your device.
+    """)
+    if st.button("Switch to Video Upload Mode"):
+        st.session_state.source_radio = "Upload Video"
+        st.experimental_rerun()
+
 # Load YOLOv8 model
 @st.cache_resource
 def load_model():
@@ -134,49 +162,121 @@ if source_radio == "Webcam":
     If you're using Streamlit Cloud, make sure to click 'Allow' when prompted for camera access.
     """)
     
+    # Check if running in Streamlit Cloud
+    is_cloud = False
+    try:
+        # Try to detect if running in Streamlit Cloud by checking hostname
+        hostname = socket.gethostname()
+        is_cloud = "streamlit" in hostname.lower() or "heroku" in hostname.lower()
+    except:
+        pass
+        
+    if is_cloud:
+        st.warning("""
+        ### Running in Cloud Environment
+        You're accessing this app from Streamlit Cloud. Webcam access in cloud environments:
+        
+        1. Requires HTTPS (which Streamlit Cloud provides)
+        2. Needs explicit browser permission (look for camera icon in address bar)
+        3. May be blocked by some corporate networks or VPNs
+        
+        If you continue to have issues, try the Upload Video option instead.
+        """)
+    
     # Add a webcam test option
     if st.button("Test Webcam Connection"):
         with st.spinner("Testing webcam connection..."):
+            # Suppress OpenCV warnings during testing
+            logging.getLogger("opencv-python").setLevel(logging.ERROR)
+            
             # Try to connect to webcam
             test_indices = [0, 1, 2, 3]
             test_results = []
+            found_working_camera = False
             
             for idx in test_indices:
-                test_cap = cv2.VideoCapture(idx)
-                if test_cap.isOpened():
-                    ret, frame = test_cap.read()
-                    if ret:
-                        test_results.append(f"✅ Camera index {idx}: Working")
-                        # Show a single frame from this camera
-                        st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), 
-                                caption=f"Test frame from camera index {idx}", 
-                                width=300)
+                try:
+                    test_cap = cv2.VideoCapture(idx)
+                    if test_cap.isOpened():
+                        ret, frame = test_cap.read()
+                        if ret and frame is not None and frame.size > 0:
+                            found_working_camera = True
+                            test_results.append(f"✅ Camera index {idx}: Working")
+                            # Show a single frame from this camera
+                            st.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), 
+                                    caption=f"Test frame from camera index {idx}", 
+                                    width=300)
+                        else:
+                            test_results.append(f"⚠️ Camera index {idx}: Connected but can't read frames")
                     else:
-                        test_results.append(f"⚠️ Camera index {idx}: Connected but can't read frames")
-                    test_cap.release()
-                else:
-                    test_results.append(f"❌ Camera index {idx}: Not available")
-            
-            if any("✅" in result for result in test_results):
-                st.success("Webcam test successful! At least one camera is working.")
-            else:
-                st.error("No working cameras found. Please check your camera connections and permissions.")
+                        test_results.append(f"❌ Camera index {idx}: Not available")
+                except Exception as e:
+                    test_results.append(f"❌ Camera index {idx}: Error - {str(e)}")
+                finally:
+                    if 'test_cap' in locals() and test_cap is not None:
+                        test_cap.release()
             
             # Display all test results
             st.write("### Camera Test Results:")
             for result in test_results:
                 st.write(result)
+                
+            if found_working_camera:
+                st.success("Webcam test successful! At least one camera is working.")
+            else:
+                st.error("No working cameras found.")
+                
+                # Provide browser-specific guidance
+                user_agent = st.session_state.get('user_agent', '')
+                if 'Chrome' in user_agent:
+                    st.info("""
+                    ### Chrome-specific tips:
+                    1. Click the camera icon in the address bar
+                    2. Select "Allow" for camera access
+                    3. Refresh the page
+                    """)
+                elif 'Firefox' in user_agent:
+                    st.info("""
+                    ### Firefox-specific tips:
+                    1. Click the camera icon in the address bar
+                    2. Select "Allow" for camera access
+                    3. Refresh the page
+                    """)
+                elif 'Safari' in user_agent:
+                    st.info("""
+                    ### Safari-specific tips:
+                    1. Check Safari > Settings > Websites > Camera
+                    2. Allow camera access for this website
+                    3. Refresh the page
+                    """)
+                
+                # Offer fallback to video upload
+                st.info("### Alternative: You can use the 'Upload Video' option instead")
+                if st.button("Switch to Video Upload", key="switch_to_video"):
+                    st.session_state.source_radio = "Upload Video"
+                    st.experimental_rerun()
     
     try:
-        # Try multiple camera indices for Windows/Linux as well
-        camera_indices = [0, 1, 2, 3]  # Try more indices for Windows/Linux
-        cap = None
-        for idx in camera_indices:
-            cap = cv2.VideoCapture(idx)
-            if cap.isOpened():
-                st.success(f"Successfully connected to camera at index {idx}")
-                break
-            cap.release()
+        # For macOS, try different camera indices
+        if is_macos:
+            camera_indices = [0, 1, 2]  # Try indices 0, 1, and 2 for macOS
+            cap = None
+            for idx in camera_indices:
+                cap = cv2.VideoCapture(idx)
+                if cap.isOpened():
+                    st.success(f"Successfully connected to camera at index {idx}")
+                    break
+                cap.release()
+        else:
+            # Try multiple camera indices for Windows/Linux as well
+            camera_indices = [0, 1, 2, 3]  # Try more indices for Windows/Linux
+            cap = None
+            for idx in camera_indices:
+                cap = cv2.VideoCapture(idx)
+                if cap.isOpened():
+                    st.success(f"Successfully connected to camera at index {idx}")
+                    break
+                cap.release()
 
         if not cap or not cap.isOpened():
             st.error("Error: Could not access webcam. Please check your camera permissions.")
@@ -195,10 +295,11 @@ if source_radio == "Webcam":
                 st.info("### To fix this on Linux:")
                 st.info("1. Check browser settings for camera permissions")
                 st.info("2. Ensure your user has access to the video device (usually in /dev/video*)")
+                st.info("3. If using Streamlit Cloud, note that physical webcams aren't available - this is expected")
             
             # Offer fallback to video upload
             st.info("### Alternative: You can use the 'Upload Video' option instead")
-            if st.button("Switch to Video Upload"):
+            if st.button("Switch to Video Upload", key="switch_to_video_main"):
                 st.session_state.source_radio = "Upload Video"
                 st.experimental_rerun()
                 
@@ -209,36 +310,58 @@ if source_radio == "Webcam":
 
         st.markdown("<div style='text-align: center; color: #4CAF50; font-weight: bold;'>Webcam is active! Detecting objects...</div>", unsafe_allow_html=True)
         
+        # Add a frame counter and error counter for robustness
+        frame_count = 0
+        error_count = 0
+        max_errors = 5  # Maximum consecutive errors before stopping
+        
         while not stop_button:
-            start_time = time.time()
-            ret, frame = cap.read()
-            if not ret:
-                st.error("Error: Could not read frame from webcam")
-                break
+            try:
+                start_time = time.time()
+                ret, frame = cap.read()
                 
-            # Convert frame from BGR to RGB
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Perform detection with confidence threshold
-            results = model(frame, conf=confidence_threshold)
-            
-            # Visualize the results on the frame
-            annotated_frame = results[0].plot()
-            
-            # Display the frame
-            stframe.image(annotated_frame, use_container_width=True)
+                if not ret or frame is None or frame.size == 0:
+                    error_count += 1
+                    if error_count > max_errors:
+                        st.error("Too many consecutive frame reading errors. Stopping webcam.")
+                        break
+                    continue
+                
+                # Reset error counter on successful frame
+                error_count = 0
+                frame_count += 1
+                
+                # Convert frame from BGR to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Perform detection with confidence threshold
+                results = model(frame, conf=confidence_threshold)
+                
+                # Visualize the results on the frame
+                annotated_frame = results[0].plot()
+                
+                # Display the frame
+                stframe.image(annotated_frame, use_container_width=True)
 
-            # Calculate and display FPS
-            fps = 1.0 / (time.time() - start_time)
-            fps_display.markdown(f"<div class='metric-container'><h3>FPS</h3><h2>{fps:.2f}</h2></div>", unsafe_allow_html=True)
-            
-            # Count and display detections
-            num_detections = len(results[0].boxes)
-            detection_count.markdown(f"<div class='metric-container'><h3>Detections</h3><h2>{num_detections}</h2></div>", unsafe_allow_html=True)
+                # Calculate and display FPS
+                fps = 1.0 / (time.time() - start_time)
+                fps_display.markdown(f"<div class='metric-container'><h3>FPS</h3><h2>{fps:.2f}</h2></div>", unsafe_allow_html=True)
+                
+                # Count and display detections
+                num_detections = len(results[0].boxes)
+                detection_count.markdown(f"<div class='metric-container'><h3>Detections</h3><h2>{num_detections}</h2></div>", unsafe_allow_html=True)
 
-            # Check if the stop button was clicked
-            if stop_button:
-                break
+                # Check if the stop button was clicked
+                if stop_button:
+                    break
+                    
+            except Exception as e:
+                error_count += 1
+                st.error(f"Error processing frame: {str(e)}")
+                if error_count > max_errors:
+                    st.error("Too many errors. Stopping webcam.")
+                    break
+                time.sleep(0.1)  # Short delay before retrying
 
         # Release the webcam
         cap.release()
